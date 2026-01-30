@@ -19,21 +19,6 @@ st.markdown("""
     .big-font {
         font-size: 20px !important;
     }
-    .success {
-        color: #28a745;
-        font-weight: bold;
-    }
-    .danger {
-        color: #dc3545;
-        font-weight: bold;
-    }
-    .warning {
-        color: #ffc107;
-        font-weight: bold;
-        background-color: #333;
-        padding: 10px;
-        border-radius: 5px;
-    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -54,7 +39,6 @@ def init_game():
         st.session_state.fatigue = 0
         
     if 'bolts' not in st.session_state:
-        # Each bolt has: current_tightness (0-100), is_mystery (True/False), is_heavy (True/False)
         st.session_state.bolts = []
         for i in range(BOLTS_NEEDED):
             st.session_state.bolts.append({
@@ -69,8 +53,7 @@ def init_game():
         st.session_state.status_effects = {
             "tool_broken": False,
             "distraction": False,
-            "boss_pressure": False,
-            "tunnel_vision": False
+            "boss_pressure": False
         }
     
     if 'log' not in st.session_state:
@@ -85,11 +68,12 @@ def add_log(msg):
 
 def check_game_over():
     # 1. Check Time
-    elapsed = time.time() - st.session_state.start_time
-    if elapsed > MAX_TIME:
-        st.session_state.game_state = "LOST"
-        st.session_state.end_reason = "TIME OUT! (Pressure)"
-        return True
+    if st.session_state.start_time:
+        elapsed = time.time() - st.session_state.start_time
+        if elapsed > MAX_TIME:
+            st.session_state.game_state = "LOST"
+            st.session_state.end_reason = "TIME OUT! (Pressure)"
+            return True
 
     # 2. Check Fatigue
     if st.session_state.fatigue >= FATIGUE_LIMIT:
@@ -236,7 +220,7 @@ def render_splash():
 def render_game():
     # 1. Check Game Over status BEFORE rendering
     if check_game_over():
-        st.rerun()  # <--- UPDATED THIS LINE
+        st.rerun()
 
     # 2. Header / HUD
     elapsed = int(time.time() - st.session_state.start_time)
@@ -265,7 +249,7 @@ def render_game():
         st.error("👔 BOSS: 'Stop wasting time and sign it off!'")
         col_boss1, col_boss2 = st.columns(2)
         col_boss1.button("REFUSE (Safety First)", on_click=action_refuse_boss)
-        col_boss2.button("SIGN (Unsafe)", on_click=lambda: st.write("GAME OVER: You signed off unsafe work.")) # Instant fail trap
+        col_boss2.button("SIGN (Unsafe)", on_click=lambda: st.write("GAME OVER: You signed off unsafe work.")) 
         st.markdown("---")
 
     if st.session_state.status_effects['tool_broken']:
@@ -276,11 +260,9 @@ def render_game():
     # 4. The Work Area (Bolts)
     st.subheader("🔧 Maintenance Panel")
     
-    # Create a grid of bolts
     cols = st.columns(3)
     for i, bolt in enumerate(st.session_state.bolts):
         with cols[i % 3]:
-            # Determine Icon and Status
             icon = "🔩"
             if bolt['progress'] >= 100:
                 icon = "✅"
@@ -290,11 +272,8 @@ def render_game():
                 icon = "⚖️"
                 
             st.write(f"**Bolt {i+1}** {icon}")
-            
-            # Progress Bar for this bolt
             st.progress(bolt['progress'])
             
-            # Action Buttons
             if bolt['progress'] < 100:
                 if bolt['is_mystery']:
                     st.button(f"Manual #{i+1}", on_click=action_manual, args=(i,), key=f"man_{i}")
@@ -305,14 +284,38 @@ def render_game():
     
     st.markdown("---")
     
-    # 5. Global Actions
-    st.subheader("🧠 Human Factor Counter-Measures")
+    st.subheader("🧠 Counter-Measures")
     c_rest, c_scan = st.columns(2)
-    c_rest.button("☕ DRINK COFFEE (Reduce Fatigue)", on_click=action_rest)
-    c_scan.button("👀 SCAN AREA (Check Awareness)") # Flavor button mostly
+    c_rest.button("☕ DRINK COFFEE (Rest)", on_click=action_rest)
+    c_scan.button("👀 SCAN AREA", key="scan") 
 
-    # 6. Log
     st.markdown("---")
     st.text("Shift Log:")
     for msg in st.session_state.log:
         st.caption(msg)
+
+def render_gameover():
+    st.title("SHIFT ENDED")
+    if st.session_state.game_state == "WON":
+        st.success("🎉 MISSION ACCOMPLISHED!")
+        st.balloons()
+        st.write("You successfully navigated the Dirty Dozen and secured the aircraft.")
+    else:
+        st.error("❌ INCIDENT REPORT FILED")
+        st.write(f"**Cause:** {st.session_state.end_reason}")
+    
+    st.write("---")
+    st.write("### Human Factors Debrief")
+    st.info("In this game, you faced Distraction, Fatigue, Pressure, Lack of Resources, and Lack of Knowledge.")
+    
+    st.button("START NEW SHIFT", on_click=lambda: st.session_state.update(game_state="SPLASH"))
+
+# --- MAIN RUNNER ---
+init_game()
+
+if st.session_state.game_state == "SPLASH":
+    render_splash()
+elif st.session_state.game_state == "PLAYING":
+    render_game()
+else:
+    render_gameover()
