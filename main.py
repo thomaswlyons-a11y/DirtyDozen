@@ -236,7 +236,7 @@ def render_splash():
 def render_game():
     # 1. Check Game Over status BEFORE rendering
     if check_game_over():
-        st.experimental_rerun()
+        st.rerun()  # <--- UPDATED THIS LINE
 
     # 2. Header / HUD
     elapsed = int(time.time() - st.session_state.start_time)
@@ -316,29 +316,3 @@ def render_game():
     st.text("Shift Log:")
     for msg in st.session_state.log:
         st.caption(msg)
-
-def render_gameover():
-    st.title("SHIFT ENDED")
-    if st.session_state.game_state == "WON":
-        st.success("🎉 MISSION ACCOMPLISHED!")
-        st.balloons()
-        st.write("You successfully navigated the Dirty Dozen and secured the aircraft.")
-    else:
-        st.error("❌ INCIDENT REPORT FILED")
-        st.write(f"**Cause:** {st.session_state.end_reason}")
-    
-    st.write("---")
-    st.write("### Human Factors Debrief")
-    st.info("In aviation, the 'Dirty Dozen' are the 12 most common causes of human error. In this game, you faced Distraction, Fatigue, Pressure, Lack of Resources, and Lack of Knowledge.")
-    
-    st.button("START NEW SHIFT", on_click=lambda: st.session_state.update(game_state="SPLASH"))
-
-# --- MAIN RUNNER ---
-init_game()
-
-if st.session_state.game_state == "SPLASH":
-    render_splash()
-elif st.session_state.game_state == "PLAYING":
-    render_game()
-else:
-    render_gameover()
