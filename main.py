@@ -1,417 +1,344 @@
-import pygame
+import streamlit as st
+import time
 import random
-import sys
 
-# --- CONFIGURATION ---
-SCREEN_WIDTH = 1000  # Made wider for text reading
-SCREEN_HEIGHT = 700
-FPS = 60
+# --- PAGE CONFIGURATION ---
+st.set_page_config(
+    page_title="Hangar Havoc: Dirty Dozen",
+    page_icon="✈️",
+    layout="centered"
+)
 
-# Colors
-WHITE = (255, 255, 255)
-BLACK = (0, 0, 0)
-GRAY = (50, 50, 50)
-DARK_GRAY = (30, 30, 30)
-RED = (200, 50, 50)
-GREEN = (50, 200, 50)
-BLUE = (50, 50, 200)
-YELLOW = (255, 215, 0)
-PURPLE = (147, 112, 219)
-CYAN = (0, 255, 255)
-ORANGE = (255, 165, 0)
+# --- CSS STYLING ---
+st.markdown("""
+    <style>
+    .stButton button {
+        width: 100%;
+        font-weight: bold;
+    }
+    .big-font {
+        font-size: 20px !important;
+    }
+    .success {
+        color: #28a745;
+        font-weight: bold;
+    }
+    .danger {
+        color: #dc3545;
+        font-weight: bold;
+    }
+    .warning {
+        color: #ffc107;
+        font-weight: bold;
+        background-color: #333;
+        padding: 10px;
+        border-radius: 5px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
-class Game:
-    def __init__(self):
-        pygame.init()
-        self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-        pygame.display.set_caption("Hangar Havoc: The Dirty Dozen")
-        self.clock = pygame.time.Clock()
-        
-        # Fonts
-        self.font_small = pygame.font.SysFont("Arial", 16)
-        self.font = pygame.font.SysFont("Arial", 20, bold=True)
-        self.large_font = pygame.font.SysFont("Arial", 40, bold=True)
-        self.title_font = pygame.font.SysFont("Arial", 60, bold=True)
-        
-        # Assets
-        self.toolbox_rect = pygame.Rect(SCREEN_WIDTH - 120, SCREEN_HEIGHT - 80, 100, 60)
-        
-        # Game State Control
-        self.state = "SPLASH" # SPLASH, GAME, GAMEOVER
-        
-        # Initialize Game Variables
-        self.reset_game_vars()
+# --- GAME CONSTANTS ---
+MAX_TIME = 60
+FATIGUE_LIMIT = 100
+BOLTS_NEEDED = 6
 
-    def reset_game_vars(self):
-        self.game_over = False
-        self.message = ""
-        self.score = 0
-        self.start_ticks = pygame.time.get_ticks()
+# --- STATE MANAGEMENT ---
+def init_game():
+    if 'game_state' not in st.session_state:
+        st.session_state.game_state = "SPLASH" # SPLASH, PLAYING, WON, LOST
+    
+    if 'start_time' not in st.session_state:
+        st.session_state.start_time = None
+    
+    if 'fatigue' not in st.session_state:
+        st.session_state.fatigue = 0
         
-        # State Flags
-        self.fatigue = 0
-        self.stress_level = 0 
-        self.tool_broken = False 
-        self.tunnel_vision = False 
-        self.active_popups = [] 
-        
-        # Create Bolts
-        self.bolts = []
-        for i in range(6):
-            self.bolts.append(Bolt(random.randint(100, 800), random.randint(100, 500)))
-
-    def trigger_random_event(self):
-        choice = random.randint(1, 100)
-        
-        if choice < 5 and not self.tool_broken: 
-            self.tool_broken = True 
-            self.message = "TOOL BROKE! Visit Toolbox (Lack of Resources)"
+    if 'bolts' not in st.session_state:
+        # Each bolt has: current_tightness (0-100), is_mystery (True/False), is_heavy (True/False)
+        st.session_state.bolts = []
+        for i in range(BOLTS_NEEDED):
+            st.session_state.bolts.append({
+                "id": i,
+                "progress": 0,
+                "is_mystery": random.choice([True] + [False]*4),
+                "is_heavy": random.choice([True] + [False]*4),
+                "status": "Loose"
+            })
             
-        elif choice < 10: 
-            self.spawn_popup("Distraction")
-            
-        elif choice < 15:
-            self.spawn_popup("Assertiveness")
-            
-        elif choice < 20:
-            self.spawn_popup("Norms")
-            
-        elif choice < 25:
-            self.tunnel_vision = True 
-            self.message = "TUNNEL VISION! Right Click to Scan (Lack of Awareness)"
-            
-        elif choice < 30:
-            self.message = "SHIFT CHANGE! Check your work! (Lack of Communication)"
-            # Reset 2 random bolts
-            if len(self.bolts) > 0:
-                for b in random.sample(self.bolts, min(len(self.bolts), 2)):
-                    b.is_fixed = False
-                    b.progress = 0
-                    b.color = YELLOW
+    if 'status_effects' not in st.session_state:
+        st.session_state.status_effects = {
+            "tool_broken": False,
+            "distraction": False,
+            "boss_pressure": False,
+            "tunnel_vision": False
+        }
+    
+    if 'log' not in st.session_state:
+        st.session_state.log = ["Welcome to the Hangar. Check the bolts!"]
 
-        elif choice < 35:
-            self.stress_level = 20
-            self.message = "STRESS SPIKE! Stop moving to calm down."
+def add_log(msg):
+    st.session_state.log.insert(0, f"• {msg}")
+    if len(st.session_state.log) > 5:
+        st.session_state.log.pop()
 
-    def spawn_popup(self, p_type):
-        x = random.randint(200, 600)
-        y = random.randint(200, 500)
-        self.active_popups.append(Popup(x, y, p_type))
+# --- GAME LOGIC FUNCTIONS ---
 
-    # --- INPUT HANDLING ---
-    def handle_input(self):
-        events = pygame.event.get()
-        raw_mouse_pos = pygame.mouse.get_pos()
+def check_game_over():
+    # 1. Check Time
+    elapsed = time.time() - st.session_state.start_time
+    if elapsed > MAX_TIME:
+        st.session_state.game_state = "LOST"
+        st.session_state.end_reason = "TIME OUT! (Pressure)"
+        return True
+
+    # 2. Check Fatigue
+    if st.session_state.fatigue >= FATIGUE_LIMIT:
+        st.session_state.game_state = "LOST"
+        st.session_state.end_reason = "PASSED OUT! (Fatigue)"
+        return True
+
+    # 3. Check Win (All bolts 100%)
+    if all(b['progress'] >= 100 for b in st.session_state.bolts):
+        st.session_state.game_state = "WON"
+        st.session_state.end_reason = "AIRCRAFT RELEASED TO SERVICE."
+        return True
+    
+    return False
+
+def trigger_random_event():
+    # Only trigger events if game is playing
+    if st.session_state.game_state != "PLAYING": return
+
+    roll = random.randint(1, 100)
+    
+    # 1. Distraction (10% chance)
+    if roll < 10 and not st.session_state.status_effects['distraction']:
+        st.session_state.status_effects['distraction'] = True
+        add_log("PHONE RINGING! (Distraction)")
         
-        # Apply Stress Jitter in GAME mode only
-        if self.state == "GAME" and self.stress_level > 0:
-            jitter_x = random.randint(-self.stress_level, self.stress_level)
-            jitter_y = random.randint(-self.stress_level, self.stress_level)
-            mouse_pos = (raw_mouse_pos[0] + jitter_x, raw_mouse_pos[1] + jitter_y)
-        else:
-            mouse_pos = raw_mouse_pos
+    # 2. Tool Break (5% chance)
+    elif roll < 15 and not st.session_state.status_effects['tool_broken']:
+        st.session_state.status_effects['tool_broken'] = True
+        add_log("WRENCH SNAPPED! (Lack of Resources)")
 
-        for event in events:
-            if event.type == pygame.QUIT:
-                pygame.quit(); sys.exit()
+    # 3. Boss Pressure (5% chance)
+    elif roll < 20 and not st.session_state.status_effects['boss_pressure']:
+        st.session_state.status_effects['boss_pressure'] = True
+        add_log("BOSS: 'SIGN IT OFF NOW!' (Assertiveness)")
 
-            if event.type == pygame.KEYDOWN:
-                if self.state == "SPLASH":
-                    # Press any key to start
-                    self.state = "GAME"
-                    self.reset_game_vars()
-                    self.start_ticks = pygame.time.get_ticks()
+    # 4. Fatigue Creep (Always happens)
+    st.session_state.fatigue += random.randint(2, 5)
+
+# --- ACTIONS (CALLBACKS) ---
+
+def start_game():
+    st.session_state.game_state = "PLAYING"
+    st.session_state.start_time = time.time()
+    st.session_state.fatigue = 0
+    st.session_state.log = ["Shift started. Good luck."]
+    # Reset bolts
+    st.session_state.bolts = []
+    for i in range(BOLTS_NEEDED):
+        st.session_state.bolts.append({
+            "id": i,
+            "progress": 0,
+            "is_mystery": random.choice([True] + [False]*4),
+            "is_heavy": random.choice([True] + [False]*4),
+            "status": "Loose"
+        })
+    st.session_state.status_effects = {k: False for k in st.session_state.status_effects}
+
+def action_tighten(bolt_idx):
+    trigger_random_event()
+    
+    # Check Blocks
+    if st.session_state.status_effects['distraction']:
+        add_log("CAN'T WORK: ANSWER PHONE FIRST!")
+        return
+    if st.session_state.status_effects['tool_broken']:
+        add_log("CAN'T WORK: TOOL BROKEN!")
+        return
+        
+    bolt = st.session_state.bolts[bolt_idx]
+    
+    # Check Specific Bolt Issues
+    if bolt['is_mystery']:
+        add_log("UNKNOWN PART! Check Manual first.")
+        return
+    
+    # Progress Logic
+    increment = 25
+    if bolt['is_heavy']:
+        increment = 10 # Heavy bolts are harder
+        add_log("Heavy bolt... turning slowly.")
+        
+    bolt['progress'] += increment
+    
+    if bolt['progress'] >= 100:
+        bolt['progress'] = 100
+        bolt['status'] = "SECURE"
+        add_log(f"Bolt {bolt_idx+1} Secured.")
+
+def action_manual(bolt_idx):
+    st.session_state.bolts[bolt_idx]['is_mystery'] = False
+    add_log(f"Bolt {bolt_idx+1} Identified.")
+    trigger_random_event()
+
+def action_rest():
+    st.session_state.fatigue = max(0, st.session_state.fatigue - 30)
+    add_log("Drank Coffee. Alertness restored.")
+    trigger_random_event()
+
+def action_fix_tool():
+    st.session_state.status_effects['tool_broken'] = False
+    add_log("Tool Replaced.")
+    trigger_random_event()
+
+def action_dismiss_distraction():
+    st.session_state.status_effects['distraction'] = False
+    add_log("Phone silenced.")
+    trigger_random_event()
+
+def action_refuse_boss():
+    st.session_state.status_effects['boss_pressure'] = False
+    add_log("Refused to sign off unsafe work.")
+    trigger_random_event()
+
+# --- UI RENDERING ---
+
+def render_splash():
+    st.title("✈️ Hangar Havoc: The Dirty Dozen")
+    st.warning("⚠️ DISCLAIMER: This is a demo game for educational purposes only.")
+    
+    st.markdown("### The Mission")
+    st.write("You are an aircraft mechanic. You have **60 seconds** to secure all **6 bolts**.")
+    st.write("But the **Dirty Dozen** (Human Factors) will try to stop you.")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.info("**Game Mechanics:**")
+        st.markdown("""
+        - **Fatigue:** Increases every action. Click 'Rest' to lower it.
+        - **Bolts:** Click 'Tighten' multiple times to fix.
+        - **Mystery Bolts (❓):** You must click 'Check Manual' first.
+        - **Heavy Bolts (⚖️):** Take more clicks to tighten.
+        """)
+    with col2:
+        st.error("**The Threats:**")
+        st.markdown("""
+        - **Distractions:** Phone rings? Dismiss it immediately.
+        - **Broken Tools:** Visit the Toolbox to fix.
+        - **Pressure:** Watch the timer!
+        """)
+        
+    st.button("START SHIFT", on_click=start_game, type="primary")
+
+def render_game():
+    # 1. Check Game Over status BEFORE rendering
+    if check_game_over():
+        st.experimental_rerun()
+
+    # 2. Header / HUD
+    elapsed = int(time.time() - st.session_state.start_time)
+    time_left = MAX_TIME - elapsed
+    
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Pressure (Time)", f"{time_left}s")
+    c2.metric("Fatigue", f"{st.session_state.fatigue}%", delta_color="inverse")
+    c3.metric("Bolts Fixed", f"{len([b for b in st.session_state.bolts if b['progress'] >= 100])}/6")
+
+    # Fatigue Warning
+    if st.session_state.fatigue > 70:
+        st.error("⚠️ FATIGUE CRITICAL! REST NOW!")
+        
+    st.progress(min(100, st.session_state.fatigue))
+
+    st.markdown("---")
+
+    # 3. Active Threats (The Dirty Dozen)
+    if st.session_state.status_effects['distraction']:
+        st.warning("📱 PHONE RINGING! 'Hey, want to go to the pub?'")
+        st.button("IGNORE (Dismiss)", on_click=action_dismiss_distraction, type="primary")
+        st.markdown("---")
+        
+    if st.session_state.status_effects['boss_pressure']:
+        st.error("👔 BOSS: 'Stop wasting time and sign it off!'")
+        col_boss1, col_boss2 = st.columns(2)
+        col_boss1.button("REFUSE (Safety First)", on_click=action_refuse_boss)
+        col_boss2.button("SIGN (Unsafe)", on_click=lambda: st.write("GAME OVER: You signed off unsafe work.")) # Instant fail trap
+        st.markdown("---")
+
+    if st.session_state.status_effects['tool_broken']:
+        st.error("🛠️ WRENCH BROKEN!")
+        st.button("GO TO STORES (Fix Tool)", on_click=action_fix_tool)
+        st.markdown("---")
+
+    # 4. The Work Area (Bolts)
+    st.subheader("🔧 Maintenance Panel")
+    
+    # Create a grid of bolts
+    cols = st.columns(3)
+    for i, bolt in enumerate(st.session_state.bolts):
+        with cols[i % 3]:
+            # Determine Icon and Status
+            icon = "🔩"
+            if bolt['progress'] >= 100:
+                icon = "✅"
+            elif bolt['is_mystery']:
+                icon = "❓"
+            elif bolt['is_heavy']:
+                icon = "⚖️"
                 
-                elif self.state == "GAMEOVER":
-                    if event.key == pygame.K_r:
-                        self.state = "SPLASH" # Go back to splash first
-                
-                elif self.state == "GAME":
-                    if event.key == pygame.K_SPACE:
-                        self.fatigue = max(0, self.fatigue - 100)
-                    if event.key == pygame.K_m:
-                        for b in self.bolts:
-                            if b.is_mystery:
-                                b.is_mystery = False
-                                b.color = YELLOW
-
-            if event.type == pygame.MOUSEBUTTONDOWN and self.state == "GAME":
-                if event.button == 3: # Right Click
-                    self.tunnel_vision = False 
-                
-                if event.button == 1: # Left Click
-                    # Handle Popups
-                    popup_hit = False
-                    for p in self.active_popups[:]:
-                        res = p.handle_click(mouse_pos)
-                        if res == "CLOSE":
-                            self.active_popups.remove(p)
-                            popup_hit = True
-                        elif res == "FAIL":
-                            self.state = "GAMEOVER"
-                            self.message = f"FAIL: {p.fail_msg}"
-                            popup_hit = True
-                    
-                    if not popup_hit:
-                        if self.toolbox_rect.collidepoint(mouse_pos):
-                            self.tool_broken = False
-                            self.message = "Tool Replaced!"
-
-        return mouse_pos
-
-    # --- UPDATE LOOP ---
-    def update(self, mouse_pos):
-        if self.state != "GAME": return
-
-        # Global Timer (Pressure)
-        self.time_left = 60 - (pygame.time.get_ticks() - self.start_ticks) / 1000
-        if self.time_left <= 0:
-            self.state = "GAMEOVER"
-            self.message = "FAIL: Time Out (Pressure)"
-
-        # Random Events
-        if random.randint(0, 100) == 1:
-            self.trigger_random_event()
-
-        # Fatigue
-        self.fatigue += 0.15
-        if self.fatigue > 250:
-            self.state = "GAMEOVER"
-            self.message = "FAIL: Fell Asleep (Fatigue)"
-
-        # Stress Decay
-        if self.stress_level > 0 and pygame.mouse.get_rel() == (0,0):
-            self.stress_level -= 0.5
-        
-        # Working on Bolts
-        if pygame.mouse.get_pressed()[0] and not self.tool_broken:
-            for b in self.bolts:
-                if b.rect.collidepoint(mouse_pos) and not b.is_fixed and not b.is_mystery:
-                    if b.is_fake_green:
-                        b.is_fake_green = False 
-                        b.color = YELLOW
-                    
-                    if b.is_heavy:
-                        b.progress += 0.5 
-                    else:
-                        b.progress += 2.0
-                        
-                    if b.progress >= 100:
-                        b.is_fixed = True
-                        b.color = GREEN
-
-        # Win Check
-        if all(b.is_fixed for b in self.bolts):
-            self.state = "GAMEOVER"
-            self.message = "SUCCESS: PLANE AIRWORTHY"
-
-    # --- DRAWING ---
-    def draw(self, mouse_pos):
-        self.screen.fill(GRAY)
-
-        if self.state == "SPLASH":
-            self.draw_splash()
-        elif self.state == "GAME":
-            self.draw_game(mouse_pos)
-        elif self.state == "GAMEOVER":
-            self.draw_game(mouse_pos) # Draw game behind overlay
-            self.draw_gameover()
-
-        pygame.display.flip()
-
-    def draw_splash(self):
-        self.screen.fill(DARK_GRAY)
-        
-        # Header
-        title = self.title_font.render("HANGAR HAVOC: THE DIRTY DOZEN", True, YELLOW)
-        t_rect = title.get_rect(center=(SCREEN_WIDTH//2, 50))
-        self.screen.blit(title, t_rect)
-        
-        disclaimer = self.font.render("DISCLAIMER: DEMO ONLY. NOT FOR REAL AVIATION TRAINING.", True, RED)
-        d_rect = disclaimer.get_rect(center=(SCREEN_WIDTH//2, 100))
-        self.screen.blit(disclaimer, d_rect)
-
-        # The Grid of Knowledge
-        start_y = 150
-        col1_x = 50
-        col2_x = SCREEN_WIDTH // 2 + 20
-        
-        factors = [
-            ("1. Lack of Communication", "Don't assume the next shift knows what you did."),
-            ("2. Complacency", "Don't sign without looking. Check the Green bolts!"),
-            ("3. Lack of Knowledge", "Don't guess on Blue bolts. Press 'M' for Manual."),
-            ("4. Distraction", "Ignore the phones! Close pop-ups immediately."),
-            ("5. Lack of Teamwork", "Heavy bolts (Purple) need help. Be patient."),
-            ("6. Fatigue", "Screen getting dark? Press SPACE to rest."),
-            ("7. Lack of Resources", "Tool Broken (Red)? Go to the Toolbox."),
-            ("8. Pressure", "You have 60 seconds. Don't panic."),
-            ("9. Lack of Assertiveness", "Refuse the Boss. Don't sign unsafe work."),
-            ("10. Stress", "Mouse shaking? Stop moving to calm down."),
-            ("11. Lack of Awareness", "Tunnel Vision? Right Click to scan."),
-            ("12. Norms", "Don't take shortcuts. Follow the rules.")
-        ]
-        
-        for i, (name, desc) in enumerate(factors):
-            # Split into two columns
-            x = col1_x if i < 6 else col2_x
-            y = start_y + (i % 6) * 70
+            st.write(f"**Bolt {i+1}** {icon}")
             
-            name_surf = self.font.render(name, True, ORANGE)
-            desc_surf = self.font_small.render(desc, True, WHITE)
+            # Progress Bar for this bolt
+            st.progress(bolt['progress'])
             
-            self.screen.blit(name_surf, (x, y))
-            self.screen.blit(desc_surf, (x, y + 25))
+            # Action Buttons
+            if bolt['progress'] < 100:
+                if bolt['is_mystery']:
+                    st.button(f"Manual #{i+1}", on_click=action_manual, args=(i,), key=f"man_{i}")
+                else:
+                    st.button(f"Tighten #{i+1}", on_click=action_tighten, args=(i,), key=f"btn_{i}")
+            else:
+                st.write("*Secure*")
+    
+    st.markdown("---")
+    
+    # 5. Global Actions
+    st.subheader("🧠 Human Factor Counter-Measures")
+    c_rest, c_scan = st.columns(2)
+    c_rest.button("☕ DRINK COFFEE (Reduce Fatigue)", on_click=action_rest)
+    c_scan.button("👀 SCAN AREA (Check Awareness)") # Flavor button mostly
 
-        # Start Prompt
-        prompt = self.large_font.render("PRESS ANY KEY TO START SHIFT", True, GREEN)
-        p_rect = prompt.get_rect(center=(SCREEN_WIDTH//2, SCREEN_HEIGHT - 60))
-        
-        # Blink effect
-        if pygame.time.get_ticks() % 1000 < 500:
-            self.screen.blit(prompt, p_rect)
+    # 6. Log
+    st.markdown("---")
+    st.text("Shift Log:")
+    for msg in st.session_state.log:
+        st.caption(msg)
 
-    def draw_game(self, mouse_pos):
-        # Draw Toolbox
-        color = RED if self.tool_broken else BLACK
-        pygame.draw.rect(self.screen, color, self.toolbox_rect)
-        tb_text = self.font.render("TOOLBOX", True, WHITE)
-        self.screen.blit(tb_text, (self.toolbox_rect.x + 5, self.toolbox_rect.y + 20))
+def render_gameover():
+    st.title("SHIFT ENDED")
+    if st.session_state.game_state == "WON":
+        st.success("🎉 MISSION ACCOMPLISHED!")
+        st.balloons()
+        st.write("You successfully navigated the Dirty Dozen and secured the aircraft.")
+    else:
+        st.error("❌ INCIDENT REPORT FILED")
+        st.write(f"**Cause:** {st.session_state.end_reason}")
+    
+    st.write("---")
+    st.write("### Human Factors Debrief")
+    st.info("In aviation, the 'Dirty Dozen' are the 12 most common causes of human error. In this game, you faced Distraction, Fatigue, Pressure, Lack of Resources, and Lack of Knowledge.")
+    
+    st.button("START NEW SHIFT", on_click=lambda: st.session_state.update(game_state="SPLASH"))
 
-        # Draw Bolts
-        for b in self.bolts:
-            b.draw(self.screen)
+# --- MAIN RUNNER ---
+init_game()
 
-        # Draw Popups
-        for p in self.active_popups:
-            p.draw(self.screen, self.font)
-
-        # Fatigue Overlay
-        if self.fatigue > 0:
-            f_surf = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
-            f_surf.set_alpha(int(self.fatigue))
-            f_surf.fill(BLACK)
-            self.screen.blit(f_surf, (0,0))
-
-        # Tunnel Vision Overlay
-        if self.tunnel_vision:
-            mask = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
-            mask.fill(BLACK)
-            pygame.draw.circle(mask, (30,30,30), mouse_pos, 80)
-            mask.set_colorkey((30,30,30))
-            self.screen.blit(mask, (0,0))
-
-        # Tool Broken Cursor
-        if self.tool_broken:
-             pygame.draw.line(self.screen, RED, (mouse_pos[0]-10, mouse_pos[1]-10), (mouse_pos[0]+10, mouse_pos[1]+10), 5)
-             pygame.draw.line(self.screen, RED, (mouse_pos[0]+10, mouse_pos[1]-10), (mouse_pos[0]-10, mouse_pos[1]+10), 5)
-
-        # HUD
-        timer_col = RED if self.time_left < 15 else WHITE
-        time_text = self.large_font.render(f"TIME: {int(self.time_left)}", True, timer_col)
-        msg_text = self.font.render(self.message, True, YELLOW)
-        self.screen.blit(time_text, (20, 20))
-        self.screen.blit(msg_text, (20, 60))
-
-    def draw_gameover(self):
-        overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
-        overlay.set_alpha(220)
-        overlay.fill(BLACK)
-        self.screen.blit(overlay, (0,0))
-        
-        color = GREEN if "SUCCESS" in self.message else RED
-        text = self.large_font.render(self.message, True, color)
-        rect = text.get_rect(center=(SCREEN_WIDTH//2, SCREEN_HEIGHT//2))
-        
-        restart = self.font.render("Press 'R' to return to Menu", True, WHITE)
-        rect2 = restart.get_rect(center=(SCREEN_WIDTH//2, SCREEN_HEIGHT//2 + 60))
-        
-        self.screen.blit(text, rect)
-        self.screen.blit(restart, rect2)
-
-class Bolt:
-    def __init__(self, x, y):
-        self.rect = pygame.Rect(x, y, 50, 50)
-        self.progress = 0
-        self.is_fixed = False
-        self.color = YELLOW
-        
-        self.is_mystery = random.choice([True] + [False]*5) 
-        self.is_heavy = random.choice([True] + [False]*8)   
-        self.is_fake_green = random.choice([True] + [False]*8) 
-        
-        if self.is_mystery: self.color = BLUE
-        if self.is_heavy: self.color = PURPLE
-        if self.is_fake_green: self.color = GREEN
-
-    def draw(self, surface):
-        draw_col = self.color
-        if self.is_fixed: draw_col = GREEN
-        
-        pygame.draw.circle(surface, draw_col, self.rect.center, 25)
-        pygame.draw.circle(surface, BLACK, self.rect.center, 25, 3)
-        
-        if self.progress > 0 and not self.is_fixed:
-            pygame.draw.rect(surface, BLACK, (self.rect.x, self.rect.y-10, 50, 8))
-            pygame.draw.rect(surface, GREEN, (self.rect.x, self.rect.y-10, 50 * (self.progress/100), 8))
-        
-        if self.is_mystery and not self.is_fixed:
-            # Draw a small question mark
-            pass 
-
-class Popup:
-    def __init__(self, x, y, p_type):
-        self.rect = pygame.Rect(x, y, 220, 110)
-        self.type = p_type
-        self.btn1 = pygame.Rect(x+10, y+70, 90, 30) 
-        self.btn2 = pygame.Rect(x+120, y+70, 90, 30) 
-        
-        if self.type == "Distraction":
-            self.text = "PHONE RINGING!"
-            self.sub = "Answer it?"
-            self.l1, self.l2 = "Answer", "Ignore"
-            self.fail_msg = "Distracted by Phone"
-        elif self.type == "Assertiveness":
-            self.text = "BOSS: SIGN IT NOW!"
-            self.sub = "It's not safe..."
-            self.l1, self.l2 = "Sign", "Refuse" 
-            self.fail_msg = "Bullied by Boss"
-        elif self.type == "Norms":
-            self.text = "SHORTCUT FOUND!"
-            self.sub = "Skip procedure?"
-            self.l1, self.l2 = "Yes", "No" 
-            self.fail_msg = "Normalized Deviance"
-
-    def draw(self, surface, font):
-        pygame.draw.rect(surface, WHITE, self.rect)
-        pygame.draw.rect(surface, BLACK, self.rect, 3)
-        
-        t1 = font.render(self.text, True, RED)
-        t2 = font.render(self.sub, True, BLACK)
-        surface.blit(t1, (self.rect.x + 10, self.rect.y + 10))
-        surface.blit(t2, (self.rect.x + 10, self.rect.y + 35))
-        
-        pygame.draw.rect(surface, GRAY, self.btn1)
-        pygame.draw.rect(surface, GRAY, self.btn2)
-        
-        l1_txt = font.render(self.l1, True, WHITE)
-        l2_txt = font.render(self.l2, True, WHITE)
-        surface.blit(l1_txt, (self.btn1.x+5, self.btn1.y+5))
-        surface.blit(l2_txt, (self.btn2.x+5, self.btn2.y+5))
-
-    def handle_click(self, pos):
-        if self.btn1.collidepoint(pos):
-            # Button 1 is always the WRONG choice in this design
-            return "FAIL"
-        if self.btn2.collidepoint(pos):
-            # Button 2 is always the RIGHT choice
-            return "CLOSE"
-        return "NONE"
-
-# --- MAIN LOOP ---
-if __name__ == "__main__":
-    game = Game()
-    while True:
-        m_pos = game.handle_input()
-        game.update(m_pos)
-        game.draw(m_pos)
-        game.clock.tick(FPS)
+if st.session_state.game_state == "SPLASH":
+    render_splash()
+elif st.session_state.game_state == "PLAYING":
+    render_game()
+else:
+    render_gameover()
